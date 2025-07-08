@@ -1,5 +1,9 @@
 # tests/test_network_generation.py
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from src.network.substrate_generator import SubstrateGenerator
 from src.network.vnr_generator import VNRGenerator
 from src.network.vnr_scheduler import PoissonVNRGenerator
