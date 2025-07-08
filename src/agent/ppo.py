@@ -6,35 +6,45 @@ import torch.optim as optim
 
 
 class PPOAgent:
-    def __init__(self, actor, critic, lr=1e-4, gamma=0.99, clip_ratio=0.2, update_epochs=10):
-        self.actor = actor  # GNN + Head
-        self.critic = critic  # GNN or MLP
-        self.optimizer = optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=lr)
+    def __init__(self, actor_encoder, actor_head, critic_encoder, critic_head, config):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.gamma = gamma
-        self.clip_ratio = clip_ratio
-        self.update_epochs = update_epochs
+        # モデル
+        self.actor_encoder = actor_encoder.to(self.device)
+        self.actor_head = actor_head.to(self.device)
+        self.critic_encoder = critic_encoder.to(self.device)
+        self.critic_head = critic_head.to(self.device)
 
-        # バッファ
-        self.states = []
-        self.actions = []
-        self.log_probs = []
-        self.rewards = []
-        self.dones = []
-        self.values = []
+        self.optimizer = optim.Adam(
+            list(self.actor_encoder.parameters()) +
+            list(self.actor_head.parameters()) +
+            list(self.critic_encoder.parameters()) +
+            list(self.critic_head.parameters()),
+            lr=config["lr"]
+        )
 
-    def select_action(self, state):
+        self.gamma = config["gamma"]
+        self.clip_ratio = config["clip_ratio"]
+        self.update_epochs = config["update_epochs"]
+
+        self.clear_buffer()
+
+    def select_action(self, vnr_data):
+        vnr_data = vnr_data.to(self.device)
         with torch.no_grad():
-            logits, probs = self.actor(state)
+            features = self.actor_encoder(vnr_data)
+            logits, probs = self.actor_head(features)
             dist = torch.distributions.Categorical(probs)
             action = dist.sample()
             log_prob = dist.log_prob(action)
-            value = self.critic(state)
+
+            value_feat = self.critic_encoder(vnr_data)
+            value = self.critic_head(value_feat).squeeze()
 
         return action, log_prob, value
 
-    def store_transition(self, state, action, log_prob, reward, done, value):
-        self.states.append(state)
+    def store_transition(self, vnr_data, action, log_prob, reward, done, value):
+        self.states.append(vnr_data)
         self.actions.append(action)
         self.log_probs.append(log_prob)
         self.rewards.append(reward)
@@ -63,17 +73,19 @@ class PPOAgent:
 
         for _ in range(self.update_epochs):
             for state, action, old_log_prob, R, adv in zip(self.states, self.actions, self.log_probs, returns, advantages):
-                logits, probs = self.actor(state)
+                state = state.to(self.device)
+                features = self.actor_encoder(state)
+                logits, probs = self.actor_head(features)
                 dist = torch.distributions.Categorical(probs)
                 log_prob = dist.log_prob(action)
                 ratio = torch.exp(log_prob - old_log_prob)
 
-                # clipped objective
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio) * adv
                 actor_loss = -torch.min(surr1, surr2).mean()
 
-                value = self.critic(state)
+                value_feat = self.critic_encoder(state)
+                value = self.critic_head(value_feat).squeeze()
                 critic_loss = (R - value).pow(2).mean()
 
                 loss = actor_loss + 0.5 * critic_loss
